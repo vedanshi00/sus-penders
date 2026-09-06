@@ -43,10 +43,9 @@ function avatarColor(name: string) {
   return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
 }
 
-function Avatar({ name, size = 24, onClick }: { name: string; size?: number; onClick?: () => void }) {
+function Avatar({ name, size = 24 }: { name: string; size?: number }) {
   return (
     <span
-      onClick={onClick}
       className="rounded-full flex items-center justify-center font-bold flex-shrink-0"
       style={{
         background: avatarColor(name || "?"),
@@ -54,7 +53,6 @@ function Avatar({ name, size = 24, onClick }: { name: string; size?: number; onC
         width: size,
         height: size,
         fontSize: size * 0.45,
-        cursor: onClick ? "pointer" : "default",
       }}
     >
       {name?.[0]?.toUpperCase() || "?"}
@@ -78,6 +76,34 @@ function getBadges(completedCount: number) {
   if (completedCount >= 10) badges.push({ label: "10 Done", color: "#FFD166" });
   if (completedCount >= 20) badges.push({ label: "20 Done", color: "#E63950" });
   return badges;
+}
+
+function getHeatmapData(tasks: any[]) {
+  const counts: Record<string, number> = {};
+  tasks.forEach((t) => {
+    if (t.status === "done" && t.doneAt?.toDate) {
+      const day = t.doneAt.toDate().toISOString().slice(0, 10);
+      counts[day] = (counts[day] || 0) + 1;
+    }
+  });
+
+  const days = [];
+  const today = new Date();
+  for (let i = 27; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    const key = d.toISOString().slice(0, 10);
+    days.push({ date: key, count: counts[key] || 0 });
+  }
+  return days;
+}
+
+function heatColor(count: number) {
+  if (count === 0) return "#1E3350";
+  if (count === 1) return "#1F5C46";
+  if (count === 2) return "#2A8C63";
+  if (count <= 4) return "#3DDC97";
+  return "#7FFFC3";
 }
 
 export default function LobbyPage() {
@@ -256,6 +282,8 @@ export default function LobbyPage() {
     .sort((a, b) => b.time - a.time)
     .slice(0, 6);
 
+  const heatmapDays = getHeatmapData(tasks);
+
   const profileTasks = profileMember
     ? tasks.filter((t) => t.doneByUid === profileMember.id)
     : [];
@@ -313,6 +341,19 @@ export default function LobbyPage() {
               ) : (
                 <p className="text-sm" style={{ color: "var(--text-dim)" }}>No streaks yet</p>
               )}
+            </div>
+            <div>
+              <p className="mb-2" style={{ color: "var(--text-dim)" }}>Last 28 days</p>
+              <div className="grid grid-cols-7 gap-1">
+                {heatmapDays.map((d) => (
+                  <div
+                    key={d.date}
+                    title={`${d.date}: ${d.count} task${d.count !== 1 ? "s" : ""}`}
+                    className="w-full aspect-square rounded-sm"
+                    style={{ background: heatColor(d.count) }}
+                  ></div>
+                ))}
+              </div>
             </div>
           </div>
         </div>

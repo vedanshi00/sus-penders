@@ -2,7 +2,7 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { db, auth } from "@/lib/firebase";
-import { doc, setDoc } from "firebase/firestore";
+import { doc, setDoc, getDocs, collection } from "firebase/firestore";
 import { signInAnonymously } from "firebase/auth";
 
 export default function JoinPage() {
@@ -24,12 +24,19 @@ export default function JoinPage() {
     }
   }
 
+  async function nameTaken(lobbyId: string, nameToCheck: string) {
+    const snap = await getDocs(collection(db, "lobbies", lobbyId, "members"));
+    return snap.docs.some(
+      (d) => d.data().name?.trim().toLowerCase() === nameToCheck.trim().toLowerCase()
+    );
+  }
+
   async function createLobby() {
     if (!name) return alert("Enter your name");
     const user = await signInAnonymously(auth);
     const newLobbyId = Math.random().toString(36).substring(2, 7).toUpperCase();
     await setDoc(doc(db, "lobbies", newLobbyId, "members", user.user.uid), {
-      name,
+      name: name.trim(),
       score: 0,
     });
     saveLobby(newLobbyId);
@@ -38,13 +45,21 @@ export default function JoinPage() {
 
   async function joinLobby() {
     if (!name || !lobbyCode) return alert("Enter name and lobby code");
+    const code = lobbyCode.toUpperCase();
+
+    const taken = await nameTaken(code, name);
+    if (taken) {
+      alert("That name is already used in this lobby. Pick a different name.");
+      return;
+    }
+
     const user = await signInAnonymously(auth);
-    await setDoc(doc(db, "lobbies", lobbyCode.toUpperCase(), "members", user.user.uid), {
-      name,
+    await setDoc(doc(db, "lobbies", code, "members", user.user.uid), {
+      name: name.trim(),
       score: 0,
     });
-    saveLobby(lobbyCode.toUpperCase());
-    router.push(`/lobby/${lobbyCode.toUpperCase()}`);
+    saveLobby(code);
+    router.push(`/lobby/${code}`);
   }
 
   return (
