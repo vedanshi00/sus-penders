@@ -64,11 +64,27 @@ export default function LeaderboardPage() {
   const podium = members.slice(0, 3);
   const rest = members.slice(3);
 
-  function startReveal() {
-    setShowReveal(true);
-    setRevealStage("suspense");
-    setTimeout(() => setRevealStage("name"), 2000);
-  }
+  function playRevealSound() {
+  const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = "sawtooth";
+  osc.frequency.setValueAtTime(220, ctx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(80, ctx.currentTime + 0.6);
+  gain.gain.setValueAtTime(0.15, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6);
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start();
+  osc.stop(ctx.currentTime + 0.6);
+}
+
+function startReveal() {
+  playRevealSound();
+  setShowReveal(true);
+  setRevealStage("suspense");
+  setTimeout(() => setRevealStage("name"), 2000);
+}
 
   const podiumOrder = podium.length === 3 ? [podium[1], podium[0], podium[2]] : podium;
   const podiumHeights = [90, 130, 70];

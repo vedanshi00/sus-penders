@@ -158,3 +158,34 @@ body {
   animation: pulseGlow 2s ease-in-out infinite;
   padding: 4px 8px;
 }
+.ship {
+  position: absolute;
+  font-size: 28px;
+  opacity: 0.5;
+  filter: drop-shadow(0 0 6px rgba(61,220,151,0.4));
+}
+
+.ship-1 {
+  top: 15%;
+  left: -60px;
+  animation: flyAcross1 22s linear infinite;
+}
+
+.ship-2 {
+  top: 65%;
+  left: -60px;
+  animation: flyAcross2 30s linear infinite;
+  animation-delay: 8s;
+}
+
+@keyframes flyAcross1 {
+  0% { transform: translateX(0) translateY(0) rotate(0deg); }
+  50% { transform: translateX(60vw) translateY(30px) rotate(10deg); }
+  100% { transform: translateX(120vw) translateY(0) rotate(0deg); }
+}
+
+@keyframes flyAcross2 {
+  0% { transform: translateX(0) translateY(0) rotate(0deg); }
+  50% { transform: translateX(60vw) translateY(-40px) rotate(-8deg); }
+  100% { transform: translateX(120vw) translateY(0) rotate(0deg); }
+}
