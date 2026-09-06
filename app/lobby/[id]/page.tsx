@@ -25,7 +25,40 @@ const CATEGORY_COLORS: Record<string, string> = {
   Personal: "#E63950",
   Other: "#94A3B8",
 };
+const CATEGORY_ICONS: Record<string, string> = {
+  Cleaning: "🧹",
+  Work: "💼",
+  Study: "📚",
+  Personal: "🏠",
+  Other: "📦",
+};
 const REACTIONS = ["👍", "🔥", "😂", "👏", "😮"];
+const AVATAR_COLORS = ["#5B8DEF", "#A78BFA", "#F472B6", "#FB923C", "#2DD4BF", "#818CF8"];
+
+function avatarColor(name: string) {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+}
+
+function Avatar({ name, size = 24 }: { name: string; size?: number }) {
+  return (
+    <span
+      className="rounded-full flex items-center justify-center font-bold flex-shrink-0"
+      style={{
+        background: avatarColor(name || "?"),
+        color: "white",
+        width: size,
+        height: size,
+        fontSize: size * 0.45,
+      }}
+    >
+      {name?.[0]?.toUpperCase() || "?"}
+    </span>
+  );
+}
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
@@ -179,7 +212,6 @@ export default function LobbyPage() {
   const totalScore = members.reduce((sum, m) => sum + (m.score || 0), 0);
   const progressPct = Math.min(100, Math.round((totalScore / goal) * 100));
 
-  // --- Derived data for side panels ---
   const tasksCompletedToday = tasks.filter((t) => {
     if (t.status !== "done" || !t.doneAt?.toDate) return false;
     return t.doneAt.toDate().toISOString().slice(0, 10) === todayStr();
@@ -192,7 +224,7 @@ export default function LobbyPage() {
 
   const activityFeed = [...tasks]
     .flatMap((t) => {
-      const entries = [];
+      const entries: { time: number; text: string }[] = [];
       if (t.createdAt?.toDate) {
         entries.push({
           time: t.createdAt.toDate().getTime(),
@@ -238,7 +270,6 @@ export default function LobbyPage() {
       </div>
 
       <div className="w-full max-w-6xl grid grid-cols-1 lg:grid-cols-[260px_1fr_260px] gap-6 items-start">
-        {/* LEFT PANEL — Team Stats */}
         <div className="card order-2 lg:order-1">
           <h2 className="text-lg font-semibold mb-3" style={{ color: "var(--mint)" }}>Team Stats</h2>
           <div className="flex flex-col gap-3 text-sm">
@@ -253,8 +284,11 @@ export default function LobbyPage() {
             <div>
               <p style={{ color: "var(--text-dim)" }}>Longest streak</p>
               {longestStreakMember && (longestStreakMember.streak || 0) > 0 ? (
-                <p className="text-lg font-bold">
-                  🔥 {longestStreakMember.streak} <span className="text-sm font-normal" style={{ color: "var(--text-dim)" }}>({longestStreakMember.name})</span>
+                <p className="text-lg font-bold flex items-center gap-2">
+                  🔥 {longestStreakMember.streak}
+                  <span className="flex items-center gap-1 text-sm font-normal" style={{ color: "var(--text-dim)" }}>
+                    <Avatar name={longestStreakMember.name} size={18} /> {longestStreakMember.name}
+                  </span>
                 </p>
               ) : (
                 <p className="text-sm" style={{ color: "var(--text-dim)" }}>No streaks yet</p>
@@ -263,7 +297,6 @@ export default function LobbyPage() {
           </div>
         </div>
 
-        {/* CENTER — existing main content */}
         <div className="flex flex-col gap-6 items-center order-1 lg:order-2">
           <div className="card w-full max-w-sm">
             <div className="flex justify-between items-center mb-2">
@@ -326,7 +359,7 @@ export default function LobbyPage() {
               onChange={(e) => setCategory(e.target.value)}
             >
               {CATEGORIES.map((c) => (
-                <option key={c} value={c}>{c}</option>
+                <option key={c} value={c}>{CATEGORY_ICONS[c]} {c}</option>
               ))}
             </select>
 
@@ -366,12 +399,7 @@ export default function LobbyPage() {
                 <div key={m.id} className="mb-3">
                   <div className="flex justify-between text-sm mb-1">
                     <span className="flex items-center gap-2">
-                      <span
-                        className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold"
-                        style={{ background: "var(--mint)", color: "#0D1B2A" }}
-                      >
-                        {m.name?.[0]?.toUpperCase() || "?"}
-                      </span>
+                      <Avatar name={m.name} size={24} />
                       {m.name}
                     </span>
                     <span style={{ color: "var(--text-dim)" }}>
@@ -425,13 +453,11 @@ export default function LobbyPage() {
                   <input type="checkbox" onChange={() => completeTask(t)} className="w-4 h-4" />
                   <div>
                     <div className="flex items-center gap-2">
-                      <span
-                        className="w-2 h-2 rounded-full inline-block"
-                        style={{ background: CATEGORY_COLORS[t.category] || "#94A3B8" }}
-                      ></span>
                       {t.taskName}
                     </div>
-                    <div className="text-xs" style={{ color: "var(--text-dim)" }}>by {t.doneBy} · {t.category}</div>
+                    <div className="text-xs flex items-center gap-1" style={{ color: "var(--text-dim)" }}>
+                      <Avatar name={t.doneBy} size={16} /> {t.doneBy} · {CATEGORY_ICONS[t.category]} {t.category}
+                    </div>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
@@ -478,7 +504,7 @@ export default function LobbyPage() {
                     color: categoryFilter === c ? "#0D1B2A" : "var(--text-dim)",
                   }}
                 >
-                  {c}
+                  {c === "All" ? "All" : `${CATEGORY_ICONS[c]} ${c}`}
                 </button>
               ))}
             </div>
@@ -491,16 +517,12 @@ export default function LobbyPage() {
               return (
                 <div key={t.id} className="border-b py-2" style={{ borderColor: "#243B57" }}>
                   <div className="flex justify-between items-center">
-                    <span className="flex items-center gap-2">
-                      <span
-                        className="w-2 h-2 rounded-full inline-block"
-                        style={{ background: CATEGORY_COLORS[t.category] || "#94A3B8" }}
-                      ></span>
-                      {t.taskName}
-                    </span>
+                    <span>{t.taskName}</span>
                     <span style={{ color: "var(--gold)" }}>+{t.difficulty}</span>
                   </div>
-                  <div className="text-xs" style={{ color: "var(--text-dim)" }}>by {t.doneBy} · {t.category}</div>
+                  <div className="text-xs flex items-center gap-1" style={{ color: "var(--text-dim)" }}>
+                    <Avatar name={t.doneBy} size={16} /> {t.doneBy} · {CATEGORY_ICONS[t.category]} {t.category}
+                  </div>
 
                   <div className="flex items-center gap-1 mt-2 flex-wrap relative">
                     {Object.entries(counts).map(([emoji, count]) => (
@@ -542,7 +564,6 @@ export default function LobbyPage() {
           </div>
         </div>
 
-        {/* RIGHT PANEL — Recent Activity */}
         <div className="card order-3">
           <h2 className="text-lg font-semibold mb-3" style={{ color: "var(--mint)" }}>Recent Activity</h2>
           {activityFeed.length === 0 && (

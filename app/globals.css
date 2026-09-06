@@ -148,3 +148,13 @@ body {
   bottom: -100px;
   right: -100px;
 }
+@keyframes pulseGlow {
+  0%, 100% { box-shadow: 0 0 4px rgba(61,220,151,0.3); }
+  50% { box-shadow: 0 0 18px rgba(61,220,151,0.7); }
+}
+.leaderboard-first {
+  border: 2px solid var(--mint);
+  border-radius: 12px;
+  animation: pulseGlow 2s ease-in-out infinite;
+  padding: 4px 8px;
+}

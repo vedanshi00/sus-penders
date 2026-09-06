@@ -4,6 +4,15 @@ import { useParams, useRouter } from "next/navigation";
 import { db } from "@/lib/firebase";
 import { collection, onSnapshot } from "firebase/firestore";
 
+const AVATAR_COLORS = ["#5B8DEF", "#A78BFA", "#F472B6", "#FB923C", "#2DD4BF", "#818CF8"];
+function avatarColor(name: string) {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+}
+
 export default function LeaderboardPage() {
   const { id } = useParams();
   const router = useRouter();
@@ -24,7 +33,6 @@ export default function LeaderboardPage() {
   }, [id]);
 
   const imposter = members[members.length - 1];
-  const topScorer = members[0];
 
   function startReveal() {
     setShowReveal(true);
@@ -48,12 +56,18 @@ export default function LeaderboardPage() {
         {members.map((m, i) => (
           <div
             key={m.id}
-            className="flex justify-between items-center border-b py-2"
-            style={{ borderColor: "#243B57" }}
+            className={`flex justify-between items-center py-2 ${i === 0 && members.length > 1 ? "leaderboard-first" : "border-b"}`}
+            style={i !== 0 || members.length <= 1 ? { borderColor: "#243B57" } : {}}
           >
-            <span className="flex items-center gap-1">
-                {i === 0 && members.length > 1 && <span>👑</span>}
-                {i + 1}. {m.name}
+            <span className="flex items-center gap-2">
+              <span
+                className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold"
+                style={{ background: avatarColor(m.name), color: "white" }}
+              >
+                {m.name?.[0]?.toUpperCase() || "?"}
+              </span>
+              {i === 0 && members.length > 1 && <span>👑</span>}
+              {i + 1}. {m.name}
             </span>
             <span className="flex items-center gap-2">
               {m.score} pts
