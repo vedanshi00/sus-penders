@@ -43,9 +43,10 @@ function avatarColor(name: string) {
   return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
 }
 
-function Avatar({ name, size = 24 }: { name: string; size?: number }) {
+function Avatar({ name, size = 24, onClick }: { name: string; size?: number; onClick?: () => void }) {
   return (
     <span
+      onClick={onClick}
       className="rounded-full flex items-center justify-center font-bold flex-shrink-0"
       style={{
         background: avatarColor(name || "?"),
@@ -53,6 +54,7 @@ function Avatar({ name, size = 24 }: { name: string; size?: number }) {
         width: size,
         height: size,
         fontSize: size * 0.45,
+        cursor: onClick ? "pointer" : "default",
       }}
     >
       {name?.[0]?.toUpperCase() || "?"}
@@ -91,6 +93,12 @@ export default function LobbyPage() {
   const [goal, setGoal] = useState(100);
   const [editingGoal, setEditingGoal] = useState(false);
   const [reactionPickerFor, setReactionPickerFor] = useState<string | null>(null);
+  const [profileMember, setProfileMember] = useState<any | null>(null);
+  const [currentUid, setCurrentUid] = useState<string | null>(null);
+
+  useEffect(() => {
+    setCurrentUid(auth.currentUser?.uid || null);
+  }, []);
 
   useEffect(() => {
     const unsubMembers = onSnapshot(
@@ -159,6 +167,12 @@ export default function LobbyPage() {
   }
 
   async function completeTask(task: any) {
+    const user = auth.currentUser;
+    if (!user || user.uid !== task.doneByUid) {
+      alert("You can only check off your own tasks!");
+      return;
+    }
+
     const taskRef = doc(db, "lobbies", id as string, "tasks", task.id);
     await updateDoc(taskRef, { status: "done", doneAt: serverTimestamp() });
 
@@ -203,7 +217,7 @@ export default function LobbyPage() {
     return counts;
   }
 
-  const pendingTasks = tasks.filter((t) => t.status === "pending");
+  const myPendingTasks = tasks.filter((t) => t.status === "pending" && t.doneByUid === currentUid);
   const completedTasks = tasks
     .filter((t) => t.status === "done")
     .filter((t) => personFilter === "All" || t.doneBy === personFilter)
@@ -241,6 +255,12 @@ export default function LobbyPage() {
     })
     .sort((a, b) => b.time - a.time)
     .slice(0, 6);
+
+  const profileTasks = profileMember
+    ? tasks.filter((t) => t.doneByUid === profileMember.id)
+    : [];
+  const profilePending = profileTasks.filter((t) => t.status === "pending");
+  const profileCompleted = profileTasks.filter((t) => t.status === "done");
 
   return (
     <div className="min-h-screen p-6 flex flex-col items-center gap-6">
@@ -392,15 +412,22 @@ export default function LobbyPage() {
           </button>
 
           <div className="card w-full max-w-sm">
-            <h2 className="text-lg font-semibold mb-3" style={{ color: "var(--mint)" }}>Stats</h2>
+            <h2 className="text-lg font-semibold mb-3" style={{ color: "var(--mint)" }}>Members</h2>
+            <p className="text-xs mb-2" style={{ color: "var(--text-dim)" }}>Tap a name to see their tasks</p>
             {members.map((m) => {
               const pct = totalScore > 0 ? Math.round(((m.score || 0) / totalScore) * 100) : 0;
               return (
                 <div key={m.id} className="mb-3">
-                  <div className="flex justify-between text-sm mb-1">
+                  <div
+                    className="flex justify-between text-sm mb-1 cursor-pointer"
+                    onClick={() => setProfileMember(m)}
+                  >
                     <span className="flex items-center gap-2">
                       <Avatar name={m.name} size={24} />
                       {m.name}
+                      {m.id === currentUid && (
+                        <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: "#1E3350", color: "var(--text-dim)" }}>you</span>
+                      )}
                     </span>
                     <span style={{ color: "var(--text-dim)" }}>
                       {m.completedCount || 0} tasks · <span key={m.score} className="pop-in inline-block">{m.score || 0} pts</span>
@@ -443,11 +470,11 @@ export default function LobbyPage() {
           </div>
 
           <div className="card w-full max-w-sm">
-            <h2 className="text-lg font-semibold mb-3" style={{ color: "var(--gold)" }}>To-Do</h2>
-            {pendingTasks.length === 0 && (
+            <h2 className="text-lg font-semibold mb-3" style={{ color: "var(--gold)" }}>Your To-Do</h2>
+            {myPendingTasks.length === 0 && (
               <p className="text-sm" style={{ color: "var(--text-dim)" }}>Nothing pending — add a task above</p>
             )}
-            {pendingTasks.map((t) => (
+            {myPendingTasks.map((t) => (
               <div key={t.id} className="flex items-center justify-between border-b py-2" style={{ borderColor: "#243B57" }}>
                 <div className="flex items-center gap-2">
                   <input type="checkbox" onChange={() => completeTask(t)} className="w-4 h-4" />
@@ -455,8 +482,8 @@ export default function LobbyPage() {
                     <div className="flex items-center gap-2">
                       {t.taskName}
                     </div>
-                    <div className="text-xs flex items-center gap-1" style={{ color: "var(--text-dim)" }}>
-                      <Avatar name={t.doneBy} size={16} /> {t.doneBy} · {CATEGORY_ICONS[t.category]} {t.category}
+                    <div className="text-xs" style={{ color: "var(--text-dim)" }}>
+                      {CATEGORY_ICONS[t.category]} {t.category}
                     </div>
                   </div>
                 </div>
@@ -578,6 +605,58 @@ export default function LobbyPage() {
           </div>
         </div>
       </div>
+
+      {profileMember && (
+        <div
+          className="fixed inset-0 flex items-center justify-center p-4 z-50"
+          style={{ background: "rgba(13,27,42,0.85)" }}
+          onClick={() => setProfileMember(null)}
+        >
+          <div
+            className="card w-full max-w-sm max-h-[80vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 mb-4">
+              <Avatar name={profileMember.name} size={40} />
+              <div>
+                <h2 className="text-lg font-bold">{profileMember.name}</h2>
+                <p className="text-xs" style={{ color: "var(--text-dim)" }}>
+                  {profileMember.score || 0} pts · {profileMember.completedCount || 0} tasks done
+                </p>
+              </div>
+              <button
+                onClick={() => setProfileMember(null)}
+                className="ml-auto text-sm"
+                style={{ color: "var(--text-dim)" }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <h3 className="text-sm font-semibold mb-2" style={{ color: "var(--gold)" }}>Pending</h3>
+            {profilePending.length === 0 && (
+              <p className="text-xs mb-3" style={{ color: "var(--text-dim)" }}>Nothing pending</p>
+            )}
+            {profilePending.map((t) => (
+              <div key={t.id} className="flex justify-between text-sm border-b py-1" style={{ borderColor: "#243B57" }}>
+                <span>{CATEGORY_ICONS[t.category]} {t.taskName}</span>
+                <span style={{ color: "var(--gold)" }}>+{t.difficulty}</span>
+              </div>
+            ))}
+
+            <h3 className="text-sm font-semibold mt-4 mb-2" style={{ color: "var(--mint)" }}>Completed</h3>
+            {profileCompleted.length === 0 && (
+              <p className="text-xs" style={{ color: "var(--text-dim)" }}>Nothing completed yet</p>
+            )}
+            {profileCompleted.map((t) => (
+              <div key={t.id} className="flex justify-between text-sm border-b py-1" style={{ borderColor: "#243B57" }}>
+                <span>{CATEGORY_ICONS[t.category]} {t.taskName}</span>
+                <span style={{ color: "var(--gold)" }}>+{t.difficulty}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
