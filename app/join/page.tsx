@@ -83,6 +83,13 @@ export default function JoinPage() {
           }}></div>
         </div>
         <h1 className="text-3xl font-bold">Sus-Penders</h1>
+        <button
+          onClick={() => router.push("/profile")}
+          className="text-xs underline mt-1"
+          style={{ color: "var(--text-dim)" }}
+        >
+          View Profile
+        </button>
         <p className="text-sm mt-1" style={{ color: "var(--text-dim)" }}>
           Log tasks. Climb the board. Don't be the Imposter.
         </p>
