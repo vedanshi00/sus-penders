@@ -25,6 +25,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   Personal: "#E63950",
   Other: "#94A3B8",
 };
+const REACTIONS = ["👍", "🔥", "😂", "👏", "😮"];
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
@@ -56,6 +57,7 @@ export default function LobbyPage() {
   const [categoryFilter, setCategoryFilter] = useState("All");
   const [goal, setGoal] = useState(100);
   const [editingGoal, setEditingGoal] = useState(false);
+  const [reactionPickerFor, setReactionPickerFor] = useState<string | null>(null);
 
   useEffect(() => {
     const unsubMembers = onSnapshot(
@@ -92,6 +94,18 @@ export default function LobbyPage() {
     await setDoc(doc(db, "lobbies", id as string), { goal: newGoal }, { merge: true });
   }
 
+  async function resetWeek() {
+    if (!confirm("Reset scores for everyone this week? This can't be undone.")) return;
+    for (const m of members) {
+      await updateDoc(doc(db, "lobbies", id as string, "members", m.id), {
+        score: 0,
+        completedCount: 0,
+        streak: 0,
+      });
+    }
+    alert("Week reset! Fresh start for everyone.");
+  }
+
   async function addTask() {
     const user = auth.currentUser;
     if (!user || !taskName) return alert("Enter a task name");
@@ -104,6 +118,7 @@ export default function LobbyPage() {
       doneBy: member?.name || "Unknown",
       doneByUid: user.uid,
       status: "pending",
+      reactions: {},
       createdAt: serverTimestamp(),
     });
 
@@ -134,6 +149,25 @@ export default function LobbyPage() {
 
   async function deleteTask(taskId: string) {
     await deleteDoc(doc(db, "lobbies", id as string, "tasks", taskId));
+  }
+
+  async function addReaction(task: any, emoji: string) {
+    const user = auth.currentUser;
+    if (!user) return;
+    const current = task.reactions || {};
+    const updated = { ...current, [user.uid]: emoji };
+    await updateDoc(doc(db, "lobbies", id as string, "tasks", task.id), {
+      reactions: updated,
+    });
+    setReactionPickerFor(null);
+  }
+
+  function reactionCounts(reactions: Record<string, string> = {}) {
+    const counts: Record<string, number> = {};
+    Object.values(reactions).forEach((emoji) => {
+      counts[emoji] = (counts[emoji] || 0) + 1;
+    });
+    return counts;
   }
 
   const pendingTasks = tasks.filter((t) => t.status === "pending");
@@ -175,29 +209,38 @@ export default function LobbyPage() {
       <div className="card w-full max-w-sm">
         <div className="flex justify-between items-center mb-2">
           <h2 className="text-lg font-semibold" style={{ color: "var(--mint)" }}>Team Goal</h2>
-          {editingGoal ? (
-            <input
-              type="number"
-              defaultValue={goal}
-              autoFocus
-              className="w-20 p-1 rounded text-black bg-white text-sm"
-              onBlur={(e) => {
-                saveGoal(Number(e.target.value) || 100);
-                setEditingGoal(false);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-              }}
-            />
-          ) : (
+          <div className="flex items-center gap-3">
             <button
-              onClick={() => setEditingGoal(true)}
+              onClick={resetWeek}
               className="text-xs underline"
-              style={{ color: "var(--text-dim)" }}
+              style={{ color: "var(--red)" }}
             >
-              edit goal
+              reset week
             </button>
-          )}
+            {editingGoal ? (
+              <input
+                type="number"
+                defaultValue={goal}
+                autoFocus
+                className="w-20 p-1 rounded text-black bg-white text-sm"
+                onBlur={(e) => {
+                  saveGoal(Number(e.target.value) || 100);
+                  setEditingGoal(false);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                }}
+              />
+            ) : (
+              <button
+                onClick={() => setEditingGoal(true)}
+                className="text-xs underline"
+                style={{ color: "var(--text-dim)" }}
+              >
+                edit goal
+              </button>
+            )}
+          </div>
         </div>
         <div className="w-full h-4 rounded-full overflow-hidden" style={{ background: "#1E3350" }}>
           <div
@@ -384,21 +427,59 @@ export default function LobbyPage() {
         {completedTasks.length === 0 && (
           <p className="text-sm" style={{ color: "var(--text-dim)" }}>No completed tasks here yet</p>
         )}
-        {completedTasks.map((t) => (
-          <div key={t.id} className="border-b py-2" style={{ borderColor: "#243B57" }}>
-            <div className="flex justify-between items-center">
-              <span className="flex items-center gap-2">
-                <span
-                  className="w-2 h-2 rounded-full inline-block"
-                  style={{ background: CATEGORY_COLORS[t.category] || "#94A3B8" }}
-                ></span>
-                {t.taskName}
-              </span>
-              <span style={{ color: "var(--gold)" }}>+{t.difficulty}</span>
+        {completedTasks.map((t) => {
+          const counts = reactionCounts(t.reactions);
+          return (
+            <div key={t.id} className="border-b py-2" style={{ borderColor: "#243B57" }}>
+              <div className="flex justify-between items-center">
+                <span className="flex items-center gap-2">
+                  <span
+                    className="w-2 h-2 rounded-full inline-block"
+                    style={{ background: CATEGORY_COLORS[t.category] || "#94A3B8" }}
+                  ></span>
+                  {t.taskName}
+                </span>
+                <span style={{ color: "var(--gold)" }}>+{t.difficulty}</span>
+              </div>
+              <div className="text-xs" style={{ color: "var(--text-dim)" }}>by {t.doneBy} · {t.category}</div>
+
+              <div className="flex items-center gap-1 mt-2 flex-wrap relative">
+                {Object.entries(counts).map(([emoji, count]) => (
+                  <span
+                    key={emoji}
+                    className="text-xs px-2 py-0.5 rounded-full"
+                    style={{ background: "#1E3350" }}
+                  >
+                    {emoji} {count}
+                  </span>
+                ))}
+                <button
+                  onClick={() => setReactionPickerFor(reactionPickerFor === t.id ? null : t.id)}
+                  className="text-xs px-2 py-0.5 rounded-full"
+                  style={{ background: "#1E3350", color: "var(--text-dim)" }}
+                >
+                  + react
+                </button>
+                {reactionPickerFor === t.id && (
+                  <div
+                    className="flex gap-1 p-1 rounded-lg absolute top-6 left-0 z-10"
+                    style={{ background: "#0D1B2A", border: "1px solid #243B57" }}
+                  >
+                    {REACTIONS.map((emoji) => (
+                      <button
+                        key={emoji}
+                        onClick={() => addReaction(t, emoji)}
+                        className="text-lg hover:scale-125 transition"
+                      >
+                        {emoji}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
-            <div className="text-xs" style={{ color: "var(--text-dim)" }}>by {t.doneBy} · {t.category}</div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
