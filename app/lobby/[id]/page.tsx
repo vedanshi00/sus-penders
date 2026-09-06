@@ -219,7 +219,13 @@ export default function LobbyPage() {
       lastActiveDate: todayStr(),
     });
   }
-
+  async function leaveLobby() {
+    if (!confirm("Leave this lobby?")) return;
+    const user = auth.currentUser;
+    if (!user) return;
+    await deleteDoc(doc(db, "lobbies", id as string, "members", user.uid));
+    router.push("/join");
+  }
   async function deleteTask(taskId: string) {
     await deleteDoc(doc(db, "lobbies", id as string, "tasks", taskId));
   }
@@ -292,13 +298,22 @@ export default function LobbyPage() {
 
   return (
     <div className="min-h-screen p-6 flex flex-col items-center gap-6">
-      <button
-        onClick={() => router.push("/join")}
-        className="self-start text-sm underline"
-        style={{ color: "var(--text-dim)" }}
-      >
-        ← Back to Home
-      </button>
+      <div className="w-full flex justify-between max-w-6xl">
+  <button
+    onClick={() => router.push("/join")}
+    className="text-sm underline"
+    style={{ color: "var(--text-dim)" }}
+  >
+    ← Back to Home
+  </button>
+  <button
+    onClick={leaveLobby}
+    className="text-sm underline"
+    style={{ color: "var(--red)" }}
+  >
+    Leave Lobby
+  </button>
+</div>
 
       <div className="text-center">
         <p className="text-sm mb-1" style={{ color: "var(--text-dim)" }}>
