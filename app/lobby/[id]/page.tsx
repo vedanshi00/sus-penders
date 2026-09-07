@@ -121,6 +121,7 @@ export default function LobbyPage() {
   const [reactionPickerFor, setReactionPickerFor] = useState<string | null>(null);
   const [profileMember, setProfileMember] = useState<any | null>(null);
   const [currentUid, setCurrentUid] = useState<string | null>(null);
+  const [voteDraft, setVoteDraft] = useState<Record<string, number>>({});
 
   useEffect(() => {
     setCurrentUid(auth.currentUser?.uid || null);
@@ -197,10 +198,32 @@ export default function LobbyPage() {
       confirmVotes: {},
       rejectVotes: {},
       disputeVotes: {},
+      difficultyVotes: {},
+      difficultyLocked: false,
       createdAt: serverTimestamp(),
     });
 
     setTaskName("");
+  }
+
+  async function voteDifficulty(task: any, value: number) {
+    const user = auth.currentUser;
+    if (!user || user.uid === task.doneByUid || task.difficultyLocked) return;
+
+    const currentVotes = task.difficultyVotes || {};
+    const updatedVotes = { ...currentVotes, [user.uid]: value };
+
+    const othersCount = members.length - 1;
+    const needed = Math.ceil(othersCount / 2);
+    const taskRef = doc(db, "lobbies", id as string, "tasks", task.id);
+
+    await updateDoc(taskRef, { difficultyVotes: updatedVotes });
+
+    if (Object.keys(updatedVotes).length >= needed) {
+      const values = Object.values(updatedVotes) as number[];
+      const avg = Math.round(values.reduce((a, b) => a + b, 0) / values.length);
+      await updateDoc(taskRef, { difficulty: avg, difficultyLocked: true });
+    }
   }
 
   async function finalizeConfirm(task: any) {
@@ -346,6 +369,7 @@ export default function LobbyPage() {
   }
 
   const myPendingTasks = tasks.filter((t) => t.status === "pending" && t.doneByUid === currentUid);
+  const othersPendingTasks = tasks.filter((t) => t.status === "pending" && t.doneByUid !== currentUid);
   const awaitingConfirmation = tasks.filter((t) => t.status === "pending_confirmation");
   const rejectedTasks = tasks.filter((t) => t.status === "rejected" && t.doneByUid === currentUid);
   const completedTasks = tasks
@@ -629,31 +653,40 @@ export default function LobbyPage() {
             {myPendingTasks.length === 0 && rejectedTasks.length === 0 && (
               <p className="text-sm" style={{ color: "var(--text-dim)" }}>Nothing pending — add a task above</p>
             )}
-            {myPendingTasks.map((t) => (
-              <div key={t.id} className="flex items-center justify-between border-b py-2" style={{ borderColor: "#243B57" }}>
-                <div className="flex items-center gap-2">
-                  <input type="checkbox" onChange={() => checkOffTask(t)} className="w-4 h-4" />
-                  <div>
-                    <div className="flex items-center gap-2">
-                      {t.taskName}
-                    </div>
-                    <div className="text-xs" style={{ color: "var(--text-dim)" }}>
-                      {CATEGORY_ICONS[t.category]} {t.category}
+            {myPendingTasks.map((t) => {
+              const voteCount = Object.keys(t.difficultyVotes || {}).length;
+              const othersCount = members.length - 1;
+              const needed = Math.ceil(othersCount / 2);
+              return (
+                <div key={t.id} className="flex items-center justify-between border-b py-2" style={{ borderColor: "#243B57" }}>
+                  <div className="flex items-center gap-2">
+                    <input type="checkbox" onChange={() => checkOffTask(t)} className="w-4 h-4" />
+                    <div>
+                      <div className="flex items-center gap-2">
+                        {t.taskName}
+                      </div>
+                      <div className="text-xs" style={{ color: "var(--text-dim)" }}>
+                        {CATEGORY_ICONS[t.category]} {t.category}
+                        {!t.difficultyLocked && othersCount > 0 && (
+                          <span> · difficulty votes: {voteCount}/{needed}</span>
+                        )}
+                        {t.difficultyLocked && <span> · team-voted difficulty</span>}
+                      </div>
                     </div>
                   </div>
+                  <div className="flex items-center gap-2">
+                    <span style={{ color: "var(--gold)" }}>+{t.difficulty}</span>
+                    <button
+                      onClick={() => deleteTask(t.id)}
+                      className="text-xs"
+                      style={{ color: "var(--red)" }}
+                    >
+                      ✕
+                    </button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <span style={{ color: "var(--gold)" }}>+{t.difficulty}</span>
-                  <button
-                    onClick={() => deleteTask(t.id)}
-                    className="text-xs"
-                    style={{ color: "var(--red)" }}
-                  >
-                    ✕
-                  </button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
             {rejectedTasks.map((t) => (
               <div key={t.id} className="flex items-center justify-between border-b py-2" style={{ borderColor: "#243B57" }}>
                 <div>
@@ -683,6 +716,71 @@ export default function LobbyPage() {
               </div>
             ))}
           </div>
+
+          {othersPendingTasks.length > 0 && (
+            <div className="card w-full max-w-sm">
+              <h2 className="text-lg font-semibold mb-2" style={{ color: "var(--mint)" }}>Rate Difficulty</h2>
+              <p className="text-xs mb-3" style={{ color: "var(--text-dim)" }}>
+                Vote what you think each task is really worth. Majority sets the final score.
+              </p>
+              {othersPendingTasks.map((t) => {
+                if (t.difficultyLocked) {
+                  return (
+                    <div key={t.id} className="border-b py-2" style={{ borderColor: "#243B57" }}>
+                      <div className="flex justify-between items-center">
+                        <span className="flex items-center gap-2">
+                          <Avatar name={t.doneBy} size={16} /> {t.taskName}
+                        </span>
+                        <span style={{ color: "var(--gold)" }}>+{t.difficulty} (locked)</span>
+                      </div>
+                    </div>
+                  );
+                }
+
+                const myVote = currentUid ? (t.difficultyVotes || {})[currentUid] : undefined;
+                const voteCount = Object.keys(t.difficultyVotes || {}).length;
+                const othersCount = members.length - 1;
+                const needed = Math.ceil(othersCount / 2);
+                const draft = voteDraft[t.id] ?? myVote ?? t.difficulty;
+
+                return (
+                  <div key={t.id} className="border-b py-2" style={{ borderColor: "#243B57" }}>
+                    <div className="flex justify-between items-center">
+                      <span className="flex items-center gap-2">
+                        <Avatar name={t.doneBy} size={16} /> {t.taskName}
+                      </span>
+                      <span style={{ color: "var(--text-dim)" }}>self-rated: {t.difficulty}</span>
+                    </div>
+                    <div className="text-xs mb-1" style={{ color: "var(--text-dim)" }}>
+                      {CATEGORY_ICONS[t.category]} {t.category} · votes: {voteCount}/{needed}
+                    </div>
+                    {myVote !== undefined ? (
+                      <p className="text-xs" style={{ color: "var(--mint)" }}>You voted {myVote}</p>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="range"
+                          min="1"
+                          max="10"
+                          value={draft}
+                          onChange={(e) => setVoteDraft({ ...voteDraft, [t.id]: Number(e.target.value) })}
+                          className="w-full"
+                        />
+                        <span className="text-xs w-6">{draft}</span>
+                        <button
+                          onClick={() => voteDifficulty(t, draft)}
+                          className="text-xs px-2 py-1 rounded"
+                          style={{ background: "var(--mint)", color: "#0D1B2A" }}
+                        >
+                          Vote
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
           {awaitingConfirmation.length > 0 && (
             <div className="card w-full max-w-sm">
