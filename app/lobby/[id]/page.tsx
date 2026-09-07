@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { db, auth } from "@/lib/firebase";
 import {
@@ -34,6 +34,7 @@ const CATEGORY_ICONS: Record<string, string> = {
 };
 const REACTIONS = ["👍", "🔥", "😂", "👏", "😮"];
 const AVATAR_COLORS = ["#5B8DEF", "#A78BFA", "#F472B6", "#FB923C", "#2DD4BF", "#818CF8"];
+const PENALTY_OPTIONS = [0, 1, 2, 3];
 
 function avatarColor(name: string) {
   let hash = 0;
@@ -106,6 +107,29 @@ function heatColor(count: number) {
   return "#7FFFC3";
 }
 
+function formatDeadline(deadline: string) {
+  const d = new Date(deadline);
+  return d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function computeModePenalty(votes: Record<string, number>) {
+  const counts: Record<number, number> = {};
+  Object.values(votes).forEach((v) => {
+    counts[v] = (counts[v] || 0) + 1;
+  });
+  let best = 0;
+  let bestCount = -1;
+  Object.entries(counts)
+    .sort((a, b) => Number(a[0]) - Number(b[0]))
+    .forEach(([val, count]) => {
+      if (count > bestCount) {
+        bestCount = count;
+        best = Number(val);
+      }
+    });
+  return best;
+}
+
 export default function LobbyPage() {
   const { id } = useParams();
   const router = useRouter();
@@ -114,6 +138,7 @@ export default function LobbyPage() {
   const [taskName, setTaskName] = useState("");
   const [difficulty, setDifficulty] = useState(5);
   const [category, setCategory] = useState(CATEGORIES[0]);
+  const [deadline, setDeadline] = useState("");
   const [personFilter, setPersonFilter] = useState("All");
   const [categoryFilter, setCategoryFilter] = useState("All");
   const [goal, setGoal] = useState(100);
@@ -122,6 +147,17 @@ export default function LobbyPage() {
   const [profileMember, setProfileMember] = useState<any | null>(null);
   const [currentUid, setCurrentUid] = useState<string | null>(null);
   const [voteDraft, setVoteDraft] = useState<Record<string, number>>({});
+  const [toasts, setToasts] = useState<{ id: string; text: string; color: string }[]>([]);
+  const prevTasksRef = useRef<Record<string, any>>({});
+  const firstLoadRef = useRef(true);
+
+  function pushToast(text: string, color = "var(--mint)") {
+    const toastId = Date.now().toString() + Math.random().toString(36).slice(2);
+    setToasts((t) => [...t, { id: toastId, text, color }]);
+    setTimeout(() => {
+      setToasts((t) => t.filter((x) => x.id !== toastId));
+    }, 4500);
+  }
 
   useEffect(() => {
     setCurrentUid(auth.currentUser?.uid || null);
@@ -140,7 +176,45 @@ export default function LobbyPage() {
       orderBy("createdAt", "desc")
     );
     const unsubTasks = onSnapshot(q, (snap) => {
-      setTasks(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      const newTasks = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const uid = auth.currentUser?.uid;
+
+      if (!firstLoadRef.current && uid) {
+        newTasks.forEach((t: any) => {
+          const prev = prevTasksRef.current[t.id];
+          if (!prev) return;
+          if (prev.status === t.status) return;
+
+          if (t.doneByUid === uid) {
+            if (t.status === "done" && prev.status === "pending_confirmation") {
+              pushToast(`✅ "${t.taskName}" confirmed! +${t.difficulty} pts`, "var(--mint)");
+            }
+            if (t.status === "rejected" && prev.status === "pending_confirmation") {
+              pushToast(`❌ "${t.taskName}" was rejected by the team`, "var(--red)");
+            }
+            if (t.status === "disputed" && prev.status === "done") {
+              pushToast(`⚠️ "${t.taskName}" was removed by team dispute`, "var(--red)");
+            }
+            if (t.status === "penalty_voting" && prev.status === "pending") {
+              pushToast(`⏰ "${t.taskName}" missed its deadline — team is voting on your penalty`, "var(--gold)");
+            }
+            if (t.status === "pending" && prev.status === "penalty_voting" && t.penalized) {
+              pushToast(`🍦 Penalty applied for a missed deadline`, "var(--red)");
+            }
+          } else {
+            if (t.status === "pending_confirmation" && prev.status === "pending") {
+              pushToast(`${t.doneBy} finished a task — your confirmation is needed`, "var(--gold)");
+            }
+          }
+        });
+      }
+
+      const map: Record<string, any> = {};
+      newTasks.forEach((t: any) => (map[t.id] = t));
+      prevTasksRef.current = map;
+      firstLoadRef.current = false;
+
+      setTasks(newTasks);
     });
 
     async function loadGoal() {
@@ -157,6 +231,61 @@ export default function LobbyPage() {
     };
   }, [id]);
 
+  useEffect(() => {
+    async function checkDeadlines() {
+      const now = Date.now();
+      for (const t of tasks) {
+        if (
+          t.deadline &&
+          !t.penalized &&
+          t.status === "pending" &&
+          new Date(t.deadline).getTime() < now
+        ) {
+          const taskRef = doc(db, "lobbies", id as string, "tasks", t.id);
+          const othersCount = members.length - 1;
+
+          if (othersCount <= 0) {
+            await updateDoc(taskRef, { penalized: true });
+            continue;
+          }
+
+          await updateDoc(taskRef, {
+            status: "penalty_voting",
+            penaltyVotes: {},
+          });
+        }
+      }
+    }
+    if (tasks.length > 0 && members.length > 0) checkDeadlines();
+  }, [tasks, members, id]);
+
+  async function votePenalty(task: any, amount: number) {
+    const user = auth.currentUser;
+    if (!user || user.uid === task.doneByUid) return;
+
+    const currentVotes = task.penaltyVotes || {};
+    if (currentVotes[user.uid] !== undefined) return;
+    const updatedVotes = { ...currentVotes, [user.uid]: amount };
+
+    const othersCount = members.length - 1;
+    const taskRef = doc(db, "lobbies", id as string, "tasks", task.id);
+
+    await updateDoc(taskRef, { penaltyVotes: updatedVotes });
+
+    if (Object.keys(updatedVotes).length >= othersCount) {
+      const finalPenalty = computeModePenalty(updatedVotes);
+      await updateDoc(taskRef, { status: "pending", penalized: true });
+
+      if (finalPenalty > 0) {
+        const memberRef = doc(db, "lobbies", id as string, "members", task.doneByUid);
+        await updateDoc(memberRef, {
+          score: increment(-finalPenalty),
+          treatsOwed: increment(1),
+        });
+      }
+    }
+  }
+
   async function saveGoal(newGoal: number) {
     setGoal(newGoal);
     await setDoc(doc(db, "lobbies", id as string), { goal: newGoal }, { merge: true });
@@ -169,6 +298,7 @@ export default function LobbyPage() {
         score: 0,
         completedCount: 0,
         streak: 0,
+        treatsOwed: 0,
       });
     }
     alert("Week reset! Fresh start for everyone.");
@@ -191,6 +321,8 @@ export default function LobbyPage() {
       taskName,
       difficulty,
       category,
+      deadline: deadline || null,
+      penalized: false,
       doneBy: member?.name || "Unknown",
       doneByUid: user.uid,
       status: "pending",
@@ -200,10 +332,12 @@ export default function LobbyPage() {
       disputeVotes: {},
       difficultyVotes: {},
       difficultyLocked: false,
+      penaltyVotes: {},
       createdAt: serverTimestamp(),
     });
 
     setTaskName("");
+    setDeadline("");
   }
 
   async function voteDifficulty(task: any, value: number) {
@@ -372,6 +506,7 @@ export default function LobbyPage() {
   const othersPendingTasks = tasks.filter((t) => t.status === "pending" && t.doneByUid !== currentUid);
   const awaitingConfirmation = tasks.filter((t) => t.status === "pending_confirmation");
   const rejectedTasks = tasks.filter((t) => t.status === "rejected" && t.doneByUid === currentUid);
+  const penaltyVotingTasks = tasks.filter((t) => t.status === "penalty_voting");
   const completedTasks = tasks
     .filter((t) => t.status === "done")
     .filter((t) => personFilter === "All" || t.doneBy === personFilter)
@@ -421,6 +556,18 @@ export default function LobbyPage() {
 
   return (
     <div className="min-h-screen p-6 flex flex-col items-center gap-6">
+      <div className="fixed top-4 right-4 z-50 flex flex-col gap-2 max-w-xs">
+        {toasts.map((t) => (
+          <div
+            key={t.id}
+            className="text-sm px-4 py-3 rounded-lg shadow-lg"
+            style={{ background: "#16283D", border: `1px solid ${t.color}`, color: "var(--text)" }}
+          >
+            {t.text}
+          </div>
+        ))}
+      </div>
+
       <div className="w-full flex justify-between max-w-6xl">
         <button
           onClick={() => router.push("/join")}
@@ -562,6 +709,16 @@ export default function LobbyPage() {
               ))}
             </select>
 
+            <div className="w-full">
+              <label className="text-xs" style={{ color: "var(--text-dim)" }}>Deadline (optional)</label>
+              <input
+                type="datetime-local"
+                className="p-2 rounded-lg text-black bg-white w-full mt-1"
+                value={deadline}
+                onChange={(e) => setDeadline(e.target.value)}
+              />
+            </div>
+
             <div className="flex items-center gap-2 w-full">
               <label className="whitespace-nowrap text-sm">Difficulty: {difficulty}</label>
               <input
@@ -633,6 +790,14 @@ export default function LobbyPage() {
                         🔥 {m.streak} day streak
                       </span>
                     )}
+                    {(m.treatsOwed || 0) > 0 && (
+                      <span
+                        className="text-xs px-2 py-0.5 rounded-full font-medium"
+                        style={{ background: "var(--red)", color: "white" }}
+                      >
+                        🍦 owes {m.treatsOwed}
+                      </span>
+                    )}
                     {getBadges(m.completedCount || 0).map((b) => (
                       <span
                         key={b.label}
@@ -657,6 +822,7 @@ export default function LobbyPage() {
               const voteCount = Object.keys(t.difficultyVotes || {}).length;
               const othersCount = members.length - 1;
               const needed = Math.ceil(othersCount / 2);
+              const isOverdue = t.deadline && new Date(t.deadline).getTime() < Date.now();
               return (
                 <div key={t.id} className="flex items-center justify-between border-b py-2" style={{ borderColor: "#243B57" }}>
                   <div className="flex items-center gap-2">
@@ -672,6 +838,11 @@ export default function LobbyPage() {
                         )}
                         {t.difficultyLocked && <span> · team-voted difficulty</span>}
                       </div>
+                      {t.deadline && (
+                        <div className="text-xs" style={{ color: isOverdue ? "var(--red)" : "var(--text-dim)" }}>
+                          {isOverdue ? "⏰ Overdue: " : "Due: "}{formatDeadline(t.deadline)}
+                        </div>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
@@ -716,6 +887,57 @@ export default function LobbyPage() {
               </div>
             ))}
           </div>
+
+          {penaltyVotingTasks.length > 0 && (
+            <div className="card w-full max-w-sm">
+              <h2 className="text-lg font-semibold mb-2" style={{ color: "var(--red)" }}>Penalty Vote</h2>
+              <p className="text-xs mb-3" style={{ color: "var(--text-dim)" }}>
+                This task missed its deadline. Everyone (except the owner) votes a penalty — most-voted amount wins.
+              </p>
+              {penaltyVotingTasks.map((t) => {
+                const isMine = t.doneByUid === currentUid;
+                const votes = t.penaltyVotes || {};
+                const voteCount = Object.keys(votes).length;
+                const othersCount = members.length - 1;
+                const myVote = currentUid ? votes[currentUid] : undefined;
+
+                return (
+                  <div key={t.id} className="border-b py-2" style={{ borderColor: "#243B57" }}>
+                    <div className="flex justify-between items-center">
+                      <span className="flex items-center gap-2">
+                        <Avatar name={t.doneBy} size={16} /> {t.taskName}
+                      </span>
+                      <span style={{ color: "var(--text-dim)" }}>votes: {voteCount}/{othersCount}</span>
+                    </div>
+                    <div className="text-xs mb-2" style={{ color: "var(--text-dim)" }}>
+                      by {t.doneBy} · {CATEGORY_ICONS[t.category]} {t.category}
+                    </div>
+
+                    {isMine ? (
+                      <p className="text-xs" style={{ color: "var(--text-dim)" }}>
+                        Team is deciding your penalty ({voteCount}/{othersCount} voted)
+                      </p>
+                    ) : myVote !== undefined ? (
+                      <p className="text-xs" style={{ color: "var(--mint)" }}>You voted {myVote} pts</p>
+                    ) : (
+                      <div className="flex gap-2">
+                        {PENALTY_OPTIONS.map((amt) => (
+                          <button
+                            key={amt}
+                            onClick={() => votePenalty(t, amt)}
+                            className="text-xs px-3 py-1 rounded-full"
+                            style={{ background: "#1E3350", color: "var(--text)" }}
+                          >
+                            {amt} pts
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
           {othersPendingTasks.length > 0 && (
             <div className="card w-full max-w-sm">
