@@ -1,4 +1,6 @@
 import "./globals.css";
+import Providers from "./providers";
+import Header from "@/components/Header";
 
 export const metadata = {
   title: "Sus-Penders",
@@ -22,13 +24,10 @@ export default function RootLayout({
           <div className="ship ship-1">🛸</div>
           <div className="ship ship-2">🚀</div>
         </div>
-        <header className="flex items-center justify-center gap-2 py-4 border-b border-[#1E3350]">
-          <div className="w-6 h-6 rounded-full bg-[var(--mint)]"></div>
-          <h1 className="font-display font-extrabold text-xl tracking-tight">
-            Sus-Penders
-          </h1>
-        </header>
-        {children}
+        <Providers>
+          <Header />
+          {children}
+        </Providers>
       </body>
     </html>
   );
