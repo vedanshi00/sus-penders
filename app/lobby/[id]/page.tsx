@@ -2,6 +2,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { db, auth } from "@/lib/firebase";
+import { useAuth } from "@/components/AuthProvider";
+import { Avatar } from "@/lib/avatar";
+import { PENALTY_DARES } from "@/lib/constants";
+import { userRef } from "@/lib/user";
 import {
   collection,
   onSnapshot,
@@ -33,33 +37,6 @@ const CATEGORY_ICONS: Record<string, string> = {
   Other: "📦",
 };
 const REACTIONS = ["👍", "🔥", "😂", "👏", "😮"];
-const AVATAR_COLORS = ["#5B8DEF", "#A78BFA", "#F472B6", "#FB923C", "#2DD4BF", "#818CF8"];
-const PENALTY_OPTIONS = [0, 1, 2, 3];
-
-function avatarColor(name: string) {
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) {
-    hash = name.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
-}
-
-function Avatar({ name, size = 24 }: { name: string; size?: number }) {
-  return (
-    <span
-      className="rounded-full flex items-center justify-center font-bold flex-shrink-0"
-      style={{
-        background: avatarColor(name || "?"),
-        color: "white",
-        width: size,
-        height: size,
-        fontSize: size * 0.45,
-      }}
-    >
-      {name?.[0]?.toUpperCase() || "?"}
-    </span>
-  );
-}
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
@@ -112,21 +89,19 @@ function formatDeadline(deadline: string) {
   return d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-function computeModePenalty(votes: Record<string, number>) {
-  const counts: Record<number, number> = {};
+function computeModeDare(votes: Record<string, string>) {
+  const counts: Record<string, number> = {};
   Object.values(votes).forEach((v) => {
     counts[v] = (counts[v] || 0) + 1;
   });
-  let best = 0;
+  let best = Object.keys(counts)[0] || "snacks";
   let bestCount = -1;
-  Object.entries(counts)
-    .sort((a, b) => Number(a[0]) - Number(b[0]))
-    .forEach(([val, count]) => {
-      if (count > bestCount) {
-        bestCount = count;
-        best = Number(val);
-      }
-    });
+  Object.entries(counts).forEach(([val, count]) => {
+    if (count > bestCount) {
+      bestCount = count;
+      best = val;
+    }
+  });
   return best;
 }
 
@@ -144,9 +119,14 @@ export default function LobbyPage() {
   const [goal, setGoal] = useState(100);
   const [editingGoal, setEditingGoal] = useState(false);
   const [reactionPickerFor, setReactionPickerFor] = useState<string | null>(null);
+  const { user } = useAuth();
   const [profileMember, setProfileMember] = useState<any | null>(null);
-  const [currentUid, setCurrentUid] = useState<string | null>(null);
+  const currentUid = user?.uid || null;
   const [voteDraft, setVoteDraft] = useState<Record<string, number>>({});
+  const [dares, setDares] = useState<any[]>([]);
+  const [dareTarget, setDareTarget] = useState<any | null>(null);
+  const [customDare, setCustomDare] = useState("");
+  const [proofDrafts, setProofDrafts] = useState<Record<string, string>>({});
   const [toasts, setToasts] = useState<{ id: string; text: string; color: string }[]>([]);
   const prevTasksRef = useRef<Record<string, any>>({});
   const firstLoadRef = useRef(true);
@@ -160,10 +140,6 @@ export default function LobbyPage() {
   }
 
   useEffect(() => {
-    setCurrentUid(auth.currentUser?.uid || null);
-  }, []);
-
-  useEffect(() => {
     const unsubMembers = onSnapshot(
       collection(db, "lobbies", id as string, "members"),
       (snap) => {
@@ -175,6 +151,13 @@ export default function LobbyPage() {
       collection(db, "lobbies", id as string, "tasks"),
       orderBy("createdAt", "desc")
     );
+    const unsubDares = onSnapshot(
+      collection(db, "lobbies", id as string, "dares"),
+      (snap) => {
+        setDares(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      }
+    );
+
     const unsubTasks = onSnapshot(q, (snap) => {
       const newTasks = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       const uid = auth.currentUser?.uid;
@@ -228,6 +211,7 @@ export default function LobbyPage() {
     return () => {
       unsubMembers();
       unsubTasks();
+      unsubDares();
     };
   }, [id]);
 
@@ -259,13 +243,32 @@ export default function LobbyPage() {
     if (tasks.length > 0 && members.length > 0) checkDeadlines();
   }, [tasks, members, id]);
 
-  async function votePenalty(task: any, amount: number) {
-    const user = auth.currentUser;
-    if (!user || user.uid === task.doneByUid) return;
+  async function assignDareToMember(opts: {
+    targetUid: string;
+    targetName: string;
+    dareId: string;
+    label: string;
+    emoji: string;
+    taskName?: string;
+    source: string;
+  }) {
+    await addDoc(collection(db, "lobbies", id as string, "dares"), {
+      ...opts,
+      status: "owed",
+      proofUrl: "",
+      createdAt: serverTimestamp(),
+    });
+    const memberRef = doc(db, "lobbies", id as string, "members", opts.targetUid);
+    await updateDoc(memberRef, { treatsOwed: increment(1) });
+  }
+
+  async function votePenalty(task: any, dareId: string) {
+    const signedIn = auth.currentUser;
+    if (!signedIn || signedIn.uid === task.doneByUid) return;
 
     const currentVotes = task.penaltyVotes || {};
-    if (currentVotes[user.uid] !== undefined) return;
-    const updatedVotes = { ...currentVotes, [user.uid]: amount };
+    if (currentVotes[signedIn.uid] !== undefined) return;
+    const updatedVotes = { ...currentVotes, [signedIn.uid]: dareId };
 
     const othersCount = members.length - 1;
     const taskRef = doc(db, "lobbies", id as string, "tasks", task.id);
@@ -273,16 +276,96 @@ export default function LobbyPage() {
     await updateDoc(taskRef, { penaltyVotes: updatedVotes });
 
     if (Object.keys(updatedVotes).length >= othersCount) {
-      const finalPenalty = computeModePenalty(updatedVotes);
-      await updateDoc(taskRef, { status: "pending", penalized: true });
+      const finalDareId = computeModeDare(updatedVotes);
+      const dare =
+        PENALTY_DARES.find((d) => d.id === finalDareId) || PENALTY_DARES[1];
+      await updateDoc(taskRef, { status: "pending", penalized: true, assignedDare: finalDareId });
+      await assignDareToMember({
+        targetUid: task.doneByUid,
+        targetName: task.doneBy,
+        dareId: dare.id,
+        label: dare.label,
+        emoji: dare.emoji,
+        taskName: task.taskName,
+        source: "deadline",
+      });
+      const memberRef = doc(db, "lobbies", id as string, "members", task.doneByUid);
+      await updateDoc(memberRef, { score: increment(-2) });
+    }
+  }
 
-      if (finalPenalty > 0) {
-        const memberRef = doc(db, "lobbies", id as string, "members", task.doneByUid);
-        await updateDoc(memberRef, {
-          score: increment(-finalPenalty),
-          treatsOwed: increment(1),
-        });
-      }
+  async function proposeDare(target: any, dareId: string, customLabel?: string) {
+    const signedIn = auth.currentUser;
+    if (!signedIn || signedIn.uid === target.id) return;
+
+    const preset = PENALTY_DARES.find((d) => d.id === dareId);
+    const label = customLabel?.trim() || preset?.label;
+    const emoji = preset?.emoji || "😈";
+    if (!label) return alert("Pick a dare or type a custom one");
+
+    const othersCount = members.length - 1;
+    const dareDoc = {
+      targetUid: target.id,
+      targetName: target.name,
+      fromUid: signedIn.uid,
+      fromName: members.find((m) => m.id === signedIn.uid)?.name || "Someone",
+      dareId,
+      label,
+      emoji,
+      source: "member",
+      status: othersCount <= 1 ? "owed" : "voting",
+      votes: { [signedIn.uid]: true },
+      proofUrl: "",
+      createdAt: serverTimestamp(),
+    };
+
+    await addDoc(collection(db, "lobbies", id as string, "dares"), dareDoc);
+    if (othersCount <= 1) {
+      await updateDoc(doc(db, "lobbies", id as string, "members", target.id), {
+        treatsOwed: increment(1),
+      });
+    }
+    setDareTarget(null);
+    setCustomDare("");
+    pushToast(`Dare sent to ${target.name}`, "var(--gold)");
+  }
+
+  async function voteDareConfirm(dare: any) {
+    const signedIn = auth.currentUser;
+    if (!signedIn || signedIn.uid === dare.targetUid) return;
+    const currentVotes = dare.votes || {};
+    if (currentVotes[signedIn.uid]) return;
+    const updatedVotes = { ...currentVotes, [signedIn.uid]: true };
+    const othersCount = members.length - 1;
+    const needed = Math.ceil(othersCount / 2);
+    const dareRef = doc(db, "lobbies", id as string, "dares", dare.id);
+    await updateDoc(dareRef, { votes: updatedVotes });
+    if (Object.keys(updatedVotes).length >= needed) {
+      await updateDoc(dareRef, { status: "owed" });
+      await updateDoc(doc(db, "lobbies", id as string, "members", dare.targetUid), {
+        treatsOwed: increment(1),
+      });
+    }
+  }
+
+  async function submitDareProof(dare: any) {
+    const proof = (proofDrafts[dare.id] || "").trim();
+    if (!proof) return alert("Paste a link or write what you did");
+    await updateDoc(doc(db, "lobbies", id as string, "dares", dare.id), {
+      status: "submitted",
+      proofUrl: proof,
+    });
+    pushToast("Proof submitted — waiting on the crew", "var(--mint)");
+  }
+
+  async function clearDare(dare: any) {
+    const signedIn = auth.currentUser;
+    if (!signedIn || signedIn.uid === dare.targetUid) return;
+    await updateDoc(doc(db, "lobbies", id as string, "dares", dare.id), { status: "cleared" });
+    const memberRef = doc(db, "lobbies", id as string, "members", dare.targetUid);
+    const member = members.find((m) => m.id === dare.targetUid);
+    if ((member?.treatsOwed || 0) > 0) {
+      await updateDoc(memberRef, { treatsOwed: increment(-1) });
     }
   }
 
@@ -376,10 +459,16 @@ export default function LobbyPage() {
 
     await updateDoc(memberRef, {
       score: increment(task.difficulty),
+      coins: increment(task.difficulty),
       completedCount: increment(1),
       streak: newStreak,
       lastActiveDate: todayStr(),
     });
+    await setDoc(
+      userRef(task.doneByUid),
+      { coins: increment(task.difficulty) },
+      { merge: true }
+    );
   }
 
   async function checkOffTask(task: any) {
@@ -556,7 +645,7 @@ export default function LobbyPage() {
 
   return (
     <div className="min-h-screen p-6 flex flex-col items-center gap-6">
-      <div className="fixed top-4 right-4 z-50 flex flex-col gap-2 max-w-xs">
+      <div className="fixed top-20 left-4 z-50 flex flex-col gap-2 max-w-xs">
         {toasts.map((t) => (
           <div
             key={t.id}
@@ -759,14 +848,14 @@ export default function LobbyPage() {
                     onClick={() => setProfileMember(m)}
                   >
                     <span className="flex items-center gap-2">
-                      <Avatar name={m.name} size={24} />
+                      <Avatar name={m.name} photoURL={m.photoURL} size={24} />
                       {m.name}
                       {m.id === currentUid && (
                         <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: "#1E3350", color: "var(--text-dim)" }}>you</span>
                       )}
                     </span>
                     <span style={{ color: "var(--text-dim)" }}>
-                      {m.completedCount || 0} tasks · <span key={m.score} className="pop-in inline-block">{m.score || 0} pts</span>
+                      {m.completedCount || 0} tasks · <span key={m.score} className="pop-in inline-block">{m.score || 0} pts</span> · 🪙 {m.coins || 0}
                     </span>
                   </div>
                   <div className="w-full h-2 rounded-full overflow-hidden" style={{ background: "#1E3350" }}>
@@ -795,7 +884,7 @@ export default function LobbyPage() {
                         className="text-xs px-2 py-0.5 rounded-full font-medium"
                         style={{ background: "var(--red)", color: "white" }}
                       >
-                        🍦 owes {m.treatsOwed}
+                        😈 owes {m.treatsOwed} dare{m.treatsOwed === 1 ? "" : "s"}
                       </span>
                     )}
                     {getBadges(m.completedCount || 0).map((b) => (
@@ -812,6 +901,105 @@ export default function LobbyPage() {
               );
             })}
           </div>
+
+          <div className="card w-full max-w-sm">
+            <h2 className="text-lg font-semibold mb-2" style={{ color: "var(--gold)" }}>Give a dare</h2>
+            <p className="text-xs mb-3" style={{ color: "var(--text-dim)" }}>
+              Missed a deadline, being sus, or just for fun — the crew can dare someone to dance, buy snacks, and more.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {members.filter((m) => m.id !== currentUid).map((m) => (
+                <button
+                  key={m.id}
+                  onClick={() => setDareTarget(m)}
+                  className="text-xs px-3 py-1 rounded-full flex items-center gap-1"
+                  style={{ background: "#1E3350" }}
+                >
+                  <Avatar name={m.name} photoURL={m.photoURL} size={16} /> {m.name}
+                </button>
+              ))}
+              {members.filter((m) => m.id !== currentUid).length === 0 && (
+                <p className="text-xs" style={{ color: "var(--text-dim)" }}>Invite friends first</p>
+              )}
+            </div>
+          </div>
+
+          {(dares.filter((d) => d.status !== "cleared").length > 0) && (
+            <div className="card w-full max-w-sm">
+              <h2 className="text-lg font-semibold mb-3" style={{ color: "var(--red)" }}>Dares &amp; penalties</h2>
+              {dares.filter((d) => d.status !== "cleared").map((d) => {
+                const isTarget = d.targetUid === currentUid;
+                const iVoted = currentUid ? (d.votes || {})[currentUid] : false;
+                const voteCount = Object.keys(d.votes || {}).length;
+                const othersCount = members.length - 1;
+                const needed = Math.max(1, Math.ceil(othersCount / 2));
+                return (
+                  <div key={d.id} className="border-b py-2" style={{ borderColor: "#243B57" }}>
+                    <div className="flex justify-between gap-2">
+                      <span>
+                        {d.emoji} {d.targetName}: {d.label}
+                      </span>
+                      <span className="text-xs" style={{ color: "var(--text-dim)" }}>{d.status}</span>
+                    </div>
+                    {d.taskName && (
+                      <p className="text-xs" style={{ color: "var(--text-dim)" }}>from missed task: {d.taskName}</p>
+                    )}
+                    {d.status === "voting" && (
+                      <div className="mt-2">
+                        <p className="text-xs mb-1" style={{ color: "var(--text-dim)" }}>
+                          Needs crew votes {voteCount}/{needed}
+                        </p>
+                        {!isTarget && (
+                          <button
+                            disabled={iVoted}
+                            onClick={() => voteDareConfirm(d)}
+                            className="text-xs px-2 py-1 rounded-full"
+                            style={{ background: iVoted ? "#1E3350" : "var(--mint)", color: iVoted ? "var(--text-dim)" : "#0D1B2A" }}
+                          >
+                            {iVoted ? "Voted" : "Confirm dare"}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {d.status === "owed" && isTarget && (
+                      <div className="mt-2 flex flex-col gap-2">
+                        <input
+                          className="p-2 rounded text-black bg-white text-sm"
+                          placeholder="Paste video / photo link, or write what you did"
+                          value={proofDrafts[d.id] || ""}
+                          onChange={(e) => setProofDrafts({ ...proofDrafts, [d.id]: e.target.value })}
+                        />
+                        <button
+                          onClick={() => submitDareProof(d)}
+                          className="text-xs px-2 py-1 rounded"
+                          style={{ background: "var(--mint)", color: "#0D1B2A" }}
+                        >
+                          Submit proof
+                        </button>
+                      </div>
+                    )}
+                    {d.status === "owed" && !isTarget && (
+                      <p className="text-xs mt-1" style={{ color: "var(--text-dim)" }}>Waiting on {d.targetName} to do it</p>
+                    )}
+                    {d.status === "submitted" && (
+                      <div className="mt-2">
+                        <p className="text-xs break-all" style={{ color: "var(--mint)" }}>Proof: {d.proofUrl}</p>
+                        {!isTarget && (
+                          <button
+                            onClick={() => clearDare(d)}
+                            className="text-xs px-2 py-1 rounded mt-1"
+                            style={{ background: "var(--mint)", color: "#0D1B2A" }}
+                          >
+                            Mark as done
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
           <div className="card w-full max-w-sm">
             <h2 className="text-lg font-semibold mb-3" style={{ color: "var(--gold)" }}>Your To-Do</h2>
@@ -892,7 +1080,7 @@ export default function LobbyPage() {
             <div className="card w-full max-w-sm">
               <h2 className="text-lg font-semibold mb-2" style={{ color: "var(--red)" }}>Penalty Vote</h2>
               <p className="text-xs mb-3" style={{ color: "var(--text-dim)" }}>
-                This task missed its deadline. Everyone (except the owner) votes a penalty — most-voted amount wins.
+                This task missed its deadline. Vote a dare — most-voted dare wins, and they also lose 2 pts.
               </p>
               {penaltyVotingTasks.map((t) => {
                 const isMine = t.doneByUid === currentUid;
@@ -915,20 +1103,22 @@ export default function LobbyPage() {
 
                     {isMine ? (
                       <p className="text-xs" style={{ color: "var(--text-dim)" }}>
-                        Team is deciding your penalty ({voteCount}/{othersCount} voted)
+                        Team is picking your dare ({voteCount}/{othersCount} voted)
                       </p>
                     ) : myVote !== undefined ? (
-                      <p className="text-xs" style={{ color: "var(--mint)" }}>You voted {myVote} pts</p>
+                      <p className="text-xs" style={{ color: "var(--mint)" }}>
+                        You voted {PENALTY_DARES.find((d) => d.id === myVote)?.label || myVote}
+                      </p>
                     ) : (
-                      <div className="flex gap-2">
-                        {PENALTY_OPTIONS.map((amt) => (
+                      <div className="flex flex-wrap gap-2">
+                        {PENALTY_DARES.map((dare) => (
                           <button
-                            key={amt}
-                            onClick={() => votePenalty(t, amt)}
+                            key={dare.id}
+                            onClick={() => votePenalty(t, dare.id)}
                             className="text-xs px-3 py-1 rounded-full"
                             style={{ background: "#1E3350", color: "var(--text)" }}
                           >
-                            {amt} pts
+                            {dare.emoji} {dare.label}
                           </button>
                         ))}
                       </div>
@@ -1222,11 +1412,11 @@ export default function LobbyPage() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center gap-3 mb-4">
-              <Avatar name={profileMember.name} size={40} />
+              <Avatar name={profileMember.name} photoURL={profileMember.photoURL} size={40} />
               <div>
                 <h2 className="text-lg font-bold">{profileMember.name}</h2>
                 <p className="text-xs" style={{ color: "var(--text-dim)" }}>
-                  {profileMember.score || 0} pts · {profileMember.completedCount || 0} tasks done
+                  {profileMember.score || 0} pts · 🪙 {profileMember.coins || 0} · {profileMember.completedCount || 0} tasks done
                 </p>
               </div>
               <button
@@ -1237,6 +1427,19 @@ export default function LobbyPage() {
                 ✕
               </button>
             </div>
+
+            {profileMember.id !== currentUid && (
+              <button
+                className="btn w-full mb-4"
+                style={{ background: "var(--red)", color: "white" }}
+                onClick={() => {
+                  setDareTarget(profileMember);
+                  setProfileMember(null);
+                }}
+              >
+                Give {profileMember.name} a dare
+              </button>
+            )}
 
             <h3 className="text-sm font-semibold mb-2" style={{ color: "var(--gold)" }}>Pending</h3>
             {profilePending.length === 0 && (
@@ -1259,6 +1462,49 @@ export default function LobbyPage() {
                 <span style={{ color: "var(--gold)" }}>+{t.difficulty}</span>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {dareTarget && (
+        <div
+          className="fixed inset-0 flex items-center justify-center p-4 z-50"
+          style={{ background: "rgba(13,27,42,0.85)" }}
+          onClick={() => setDareTarget(null)}
+        >
+          <div
+            className="card w-full max-w-sm"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-lg font-bold mb-1">Dare {dareTarget.name}</h2>
+            <p className="text-xs mb-3" style={{ color: "var(--text-dim)" }}>
+              Crew votes to confirm unless it is just the two of you.
+            </p>
+            <div className="flex flex-col gap-2">
+              {PENALTY_DARES.map((dare) => (
+                <button
+                  key={dare.id}
+                  onClick={() => proposeDare(dareTarget, dare.id)}
+                  className="text-sm px-3 py-2 rounded-lg text-left"
+                  style={{ background: "#1E3350" }}
+                >
+                  {dare.emoji} {dare.label}
+                </button>
+              ))}
+            </div>
+            <input
+              className="p-2 rounded text-black bg-white text-sm w-full mt-3"
+              placeholder="Or type a custom dare"
+              value={customDare}
+              onChange={(e) => setCustomDare(e.target.value)}
+            />
+            <button
+              onClick={() => proposeDare(dareTarget, "custom", customDare)}
+              className="btn w-full mt-2"
+              style={{ background: "var(--mint)", color: "#0D1B2A" }}
+            >
+              Send custom dare
+            </button>
           </div>
         </div>
       )}

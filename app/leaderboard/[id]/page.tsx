@@ -3,32 +3,7 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { db } from "@/lib/firebase";
 import { collection, onSnapshot } from "firebase/firestore";
-
-const AVATAR_COLORS = ["#5B8DEF", "#A78BFA", "#F472B6", "#FB923C", "#2DD4BF", "#818CF8"];
-function avatarColor(name: string) {
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) {
-    hash = name.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
-}
-
-function Avatar({ name, size = 24 }: { name: string; size?: number }) {
-  return (
-    <span
-      className="rounded-full flex items-center justify-center font-bold flex-shrink-0"
-      style={{
-        background: avatarColor(name || "?"),
-        color: "white",
-        width: size,
-        height: size,
-        fontSize: size * 0.45,
-      }}
-    >
-      {name?.[0]?.toUpperCase() || "?"}
-    </span>
-  );
-}
+import { Avatar } from "@/lib/avatar";
 
 function ImposterIcon({ size = 100 }: { size?: number }) {
   return (
@@ -110,7 +85,7 @@ function startReveal() {
             return (
               <div key={m.id} className="flex flex-col items-center gap-1 flex-1">
                 {realRank === 0 && <span className="text-lg">👑</span>}
-                <Avatar name={m.name} size={32} />
+                <Avatar name={m.name} photoURL={m.photoURL} size={32} />
                 <p className="text-xs font-semibold truncate max-w-full">{m.name}</p>
                 <p className="text-xs" style={{ color: "var(--text-dim)" }}>{m.score} pts</p>
                 <div
@@ -134,7 +109,7 @@ function startReveal() {
               style={{ borderColor: "#243B57" }}
             >
               <span className="flex items-center gap-2">
-                <Avatar name={m.name} size={24} />
+                <Avatar name={m.name} photoURL={m.photoURL} size={24} />
                 {i + 4}. {m.name}
               </span>
               <span>{m.score} pts</span>
