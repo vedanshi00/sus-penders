@@ -173,6 +173,14 @@ export default function LobbyPage() {
     alert("Week reset! Fresh start for everyone.");
   }
 
+  async function leaveLobby() {
+    if (!confirm("Leave this lobby?")) return;
+    const user = auth.currentUser;
+    if (!user) return;
+    await deleteDoc(doc(db, "lobbies", id as string, "members", user.uid));
+    router.push("/join");
+  }
+
   async function addTask() {
     const user = auth.currentUser;
     if (!user || !taskName) return alert("Enter a task name");
@@ -186,19 +194,16 @@ export default function LobbyPage() {
       doneByUid: user.uid,
       status: "pending",
       reactions: {},
+      confirmVotes: {},
+      rejectVotes: {},
+      disputeVotes: {},
       createdAt: serverTimestamp(),
     });
 
     setTaskName("");
   }
 
-  async function completeTask(task: any) {
-    const user = auth.currentUser;
-    if (!user || user.uid !== task.doneByUid) {
-      alert("You can only check off your own tasks!");
-      return;
-    }
-
+  async function finalizeConfirm(task: any) {
     const taskRef = doc(db, "lobbies", id as string, "tasks", task.id);
     await updateDoc(taskRef, { status: "done", doneAt: serverTimestamp() });
 
@@ -219,13 +224,77 @@ export default function LobbyPage() {
       lastActiveDate: todayStr(),
     });
   }
-  async function leaveLobby() {
-    if (!confirm("Leave this lobby?")) return;
+
+  async function checkOffTask(task: any) {
     const user = auth.currentUser;
-    if (!user) return;
-    await deleteDoc(doc(db, "lobbies", id as string, "members", user.uid));
-    router.push("/join");
+    if (!user || user.uid !== task.doneByUid) {
+      alert("You can only check off your own tasks!");
+      return;
+    }
+
+    const othersCount = members.length - 1;
+
+    if (othersCount <= 0) {
+      await finalizeConfirm(task);
+      return;
+    }
+
+    const taskRef = doc(db, "lobbies", id as string, "tasks", task.id);
+    await updateDoc(taskRef, {
+      status: "pending_confirmation",
+      pendingAt: serverTimestamp(),
+      confirmVotes: {},
+      rejectVotes: {},
+    });
   }
+
+  async function voteConfirm(task: any) {
+    const user = auth.currentUser;
+    if (!user || user.uid === task.doneByUid) return;
+
+    const currentVotes = task.confirmVotes || {};
+    if (currentVotes[user.uid]) return;
+    const updatedVotes = { ...currentVotes, [user.uid]: true };
+
+    const othersCount = members.length - 1;
+    const needed = Math.ceil(othersCount / 2);
+    const taskRef = doc(db, "lobbies", id as string, "tasks", task.id);
+
+    await updateDoc(taskRef, { confirmVotes: updatedVotes });
+
+    if (Object.keys(updatedVotes).length >= needed) {
+      await finalizeConfirm({ ...task, confirmVotes: updatedVotes });
+    }
+  }
+
+  async function voteReject(task: any) {
+    const user = auth.currentUser;
+    if (!user || user.uid === task.doneByUid) return;
+
+    const currentVotes = task.rejectVotes || {};
+    if (currentVotes[user.uid]) return;
+    const updatedVotes = { ...currentVotes, [user.uid]: true };
+
+    const othersCount = members.length - 1;
+    const needed = Math.ceil(othersCount / 2);
+    const taskRef = doc(db, "lobbies", id as string, "tasks", task.id);
+
+    await updateDoc(taskRef, { rejectVotes: updatedVotes });
+
+    if (Object.keys(updatedVotes).length >= needed) {
+      await updateDoc(taskRef, { status: "rejected" });
+    }
+  }
+
+  async function resubmitTask(task: any) {
+    const taskRef = doc(db, "lobbies", id as string, "tasks", task.id);
+    await updateDoc(taskRef, {
+      status: "pending",
+      confirmVotes: {},
+      rejectVotes: {},
+    });
+  }
+
   async function deleteTask(taskId: string) {
     await deleteDoc(doc(db, "lobbies", id as string, "tasks", taskId));
   }
@@ -241,6 +310,33 @@ export default function LobbyPage() {
     setReactionPickerFor(null);
   }
 
+  async function disputeTask(task: any) {
+    const user = auth.currentUser;
+    if (!user) return;
+    if (user.uid === task.doneByUid) {
+      alert("You can't dispute your own task!");
+      return;
+    }
+
+    const currentVotes = task.disputeVotes || {};
+    if (currentVotes[user.uid]) return;
+
+    const updatedVotes = { ...currentVotes, [user.uid]: true };
+    const majorityNeeded = Math.ceil(members.length / 2);
+    const taskRef = doc(db, "lobbies", id as string, "tasks", task.id);
+
+    await updateDoc(taskRef, { disputeVotes: updatedVotes });
+
+    if (Object.keys(updatedVotes).length >= majorityNeeded) {
+      await updateDoc(taskRef, { status: "disputed" });
+      const memberRef = doc(db, "lobbies", id as string, "members", task.doneByUid);
+      await updateDoc(memberRef, {
+        score: increment(-task.difficulty),
+        completedCount: increment(-1),
+      });
+    }
+  }
+
   function reactionCounts(reactions: Record<string, string> = {}) {
     const counts: Record<string, number> = {};
     Object.values(reactions).forEach((emoji) => {
@@ -250,10 +346,13 @@ export default function LobbyPage() {
   }
 
   const myPendingTasks = tasks.filter((t) => t.status === "pending" && t.doneByUid === currentUid);
+  const awaitingConfirmation = tasks.filter((t) => t.status === "pending_confirmation");
+  const rejectedTasks = tasks.filter((t) => t.status === "rejected" && t.doneByUid === currentUid);
   const completedTasks = tasks
     .filter((t) => t.status === "done")
     .filter((t) => personFilter === "All" || t.doneBy === personFilter)
     .filter((t) => categoryFilter === "All" || t.category === categoryFilter);
+  const disputedTasks = tasks.filter((t) => t.status === "disputed");
 
   const totalScore = members.reduce((sum, m) => sum + (m.score || 0), 0);
   const progressPct = Math.min(100, Math.round((totalScore / goal) * 100));
@@ -299,21 +398,21 @@ export default function LobbyPage() {
   return (
     <div className="min-h-screen p-6 flex flex-col items-center gap-6">
       <div className="w-full flex justify-between max-w-6xl">
-  <button
-    onClick={() => router.push("/join")}
-    className="text-sm underline"
-    style={{ color: "var(--text-dim)" }}
-  >
-    ← Back to Home
-  </button>
-  <button
-    onClick={leaveLobby}
-    className="text-sm underline"
-    style={{ color: "var(--red)" }}
-  >
-    Leave Lobby
-  </button>
-</div>
+        <button
+          onClick={() => router.push("/join")}
+          className="text-sm underline"
+          style={{ color: "var(--text-dim)" }}
+        >
+          ← Back to Home
+        </button>
+        <button
+          onClick={leaveLobby}
+          className="text-sm underline"
+          style={{ color: "var(--red)" }}
+        >
+          Leave Lobby
+        </button>
+      </div>
 
       <div className="text-center">
         <p className="text-sm mb-1" style={{ color: "var(--text-dim)" }}>
@@ -527,13 +626,13 @@ export default function LobbyPage() {
 
           <div className="card w-full max-w-sm">
             <h2 className="text-lg font-semibold mb-3" style={{ color: "var(--gold)" }}>Your To-Do</h2>
-            {myPendingTasks.length === 0 && (
+            {myPendingTasks.length === 0 && rejectedTasks.length === 0 && (
               <p className="text-sm" style={{ color: "var(--text-dim)" }}>Nothing pending — add a task above</p>
             )}
             {myPendingTasks.map((t) => (
               <div key={t.id} className="flex items-center justify-between border-b py-2" style={{ borderColor: "#243B57" }}>
                 <div className="flex items-center gap-2">
-                  <input type="checkbox" onChange={() => completeTask(t)} className="w-4 h-4" />
+                  <input type="checkbox" onChange={() => checkOffTask(t)} className="w-4 h-4" />
                   <div>
                     <div className="flex items-center gap-2">
                       {t.taskName}
@@ -555,10 +654,104 @@ export default function LobbyPage() {
                 </div>
               </div>
             ))}
+            {rejectedTasks.map((t) => (
+              <div key={t.id} className="flex items-center justify-between border-b py-2" style={{ borderColor: "#243B57" }}>
+                <div>
+                  <div className="flex items-center gap-2" style={{ color: "var(--red)" }}>
+                    {t.taskName} <span className="text-xs">(rejected by team)</span>
+                  </div>
+                  <div className="text-xs" style={{ color: "var(--text-dim)" }}>
+                    {CATEGORY_ICONS[t.category]} {t.category}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => resubmitTask(t)}
+                    className="text-xs px-2 py-1 rounded"
+                    style={{ background: "var(--mint)", color: "#0D1B2A" }}
+                  >
+                    Resubmit
+                  </button>
+                  <button
+                    onClick={() => deleteTask(t.id)}
+                    className="text-xs"
+                    style={{ color: "var(--red)" }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
 
-          <div className="card w-full max-w-sm mb-10">
+          {awaitingConfirmation.length > 0 && (
+            <div className="card w-full max-w-sm">
+              <h2 className="text-lg font-semibold mb-2" style={{ color: "var(--gold)" }}>Awaiting Confirmation</h2>
+              <p className="text-xs mb-3" style={{ color: "var(--text-dim)" }}>
+                Points only count once the team confirms. This is the proof system — no free points.
+              </p>
+              {awaitingConfirmation.map((t) => {
+                const isMine = t.doneByUid === currentUid;
+                const confirmCount = Object.keys(t.confirmVotes || {}).length;
+                const rejectCount = Object.keys(t.rejectVotes || {}).length;
+                const othersCount = members.length - 1;
+                const needed = Math.ceil(othersCount / 2);
+                const iConfirmed = currentUid ? (t.confirmVotes || {})[currentUid] : false;
+                const iRejected = currentUid ? (t.rejectVotes || {})[currentUid] : false;
+
+                return (
+                  <div key={t.id} className="border-b py-2" style={{ borderColor: "#243B57" }}>
+                    <div className="flex justify-between items-center">
+                      <span className="flex items-center gap-2">
+                        <Avatar name={t.doneBy} size={16} /> {t.taskName}
+                      </span>
+                      <span style={{ color: "var(--gold)" }}>+{t.difficulty}</span>
+                    </div>
+                    <div className="text-xs mb-2" style={{ color: "var(--text-dim)" }}>
+                      by {t.doneBy} · {CATEGORY_ICONS[t.category]} {t.category}
+                    </div>
+
+                    {isMine ? (
+                      <p className="text-xs" style={{ color: "var(--text-dim)" }}>
+                        Waiting on team: {confirmCount} confirm · {rejectCount} reject (need {needed})
+                      </p>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => voteConfirm(t)}
+                          disabled={iConfirmed}
+                          className="text-xs px-2 py-1 rounded-full"
+                          style={{
+                            background: iConfirmed ? "#1E3350" : "var(--mint)",
+                            color: iConfirmed ? "var(--text-dim)" : "#0D1B2A",
+                          }}
+                        >
+                          ✓ Confirm ({confirmCount}/{needed})
+                        </button>
+                        <button
+                          onClick={() => voteReject(t)}
+                          disabled={iRejected}
+                          className="text-xs px-2 py-1 rounded-full"
+                          style={{
+                            background: iRejected ? "#1E3350" : "rgba(230,57,80,0.2)",
+                            color: iRejected ? "var(--text-dim)" : "var(--red)",
+                          }}
+                        >
+                          ✕ Reject ({rejectCount}/{needed})
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="card w-full max-w-sm">
             <h2 className="text-lg font-semibold mb-3" style={{ color: "var(--mint)" }}>Completed</h2>
+            <p className="text-xs mb-3" style={{ color: "var(--text-dim)" }}>
+              Think a confirmed task shouldn't have counted? Dispute it — majority vote reverses the points.
+            </p>
 
             <div className="flex flex-wrap gap-2 mb-2">
               {["All", ...members.map((m) => m.name)].map((name) => (
@@ -597,6 +790,11 @@ export default function LobbyPage() {
             )}
             {completedTasks.map((t) => {
               const counts = reactionCounts(t.reactions);
+              const disputeCount = Object.keys(t.disputeVotes || {}).length;
+              const majorityNeeded = Math.ceil(members.length / 2);
+              const iVoted = currentUid ? (t.disputeVotes || {})[currentUid] : false;
+              const isMine = t.doneByUid === currentUid;
+
               return (
                 <div key={t.id} className="border-b py-2" style={{ borderColor: "#243B57" }}>
                   <div className="flex justify-between items-center">
@@ -640,11 +838,42 @@ export default function LobbyPage() {
                         ))}
                       </div>
                     )}
+
+                    {!isMine && (
+                      <button
+                        onClick={() => disputeTask(t)}
+                        disabled={iVoted}
+                        className="text-xs px-2 py-0.5 rounded-full"
+                        style={{
+                          background: iVoted ? "#1E3350" : "rgba(230,57,80,0.2)",
+                          color: iVoted ? "var(--text-dim)" : "var(--red)",
+                        }}
+                      >
+                        {iVoted ? `⚠️ Voted (${disputeCount}/${majorityNeeded})` : "⚠️ Dispute"}
+                      </button>
+                    )}
                   </div>
                 </div>
               );
             })}
           </div>
+
+          {disputedTasks.length > 0 && (
+            <div className="card w-full max-w-sm mb-10">
+              <h2 className="text-lg font-semibold mb-3" style={{ color: "var(--red)" }}>Removed by Vote</h2>
+              {disputedTasks.map((t) => (
+                <div key={t.id} className="border-b py-2 opacity-60" style={{ borderColor: "#243B57" }}>
+                  <div className="flex justify-between items-center line-through">
+                    <span>{t.taskName}</span>
+                    <span style={{ color: "var(--red)" }}>-{t.difficulty}</span>
+                  </div>
+                  <div className="text-xs" style={{ color: "var(--text-dim)" }}>
+                    by {t.doneBy} · removed by majority vote
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="card order-3">
