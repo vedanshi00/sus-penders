@@ -178,7 +178,7 @@ export default function JoinPage() {
 
         {isSignedIn && (
           <p className="text-xs" style={{ color: "var(--mint)" }}>
-            Signed in as {user.email || profile?.displayName}. Same account = same progress.
+            Signed in as {user?.email || profile?.displayName}. Same account = same progress.
           </p>
         )}
 
